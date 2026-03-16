@@ -4,7 +4,7 @@ import pandas as pd
 
 from typing import Any, Dict
 
-from utils import is_power_of_two, get_pareto_per_chip_number
+from .utils import is_power_of_two, get_pareto_per_chip_number
 
 
 def load_csv(file_path: str):

@@ -11,8 +11,8 @@ import time
 from itertools import product
 from typing import Any, Dict
 
-from config import RetrievalPolicy, EncodeDBPolicy, PhysicalMapping
-from utils import get_filtered_df, is_power_of_two, get_power_of_two_list, get_pareto_df
+from .config import RetrievalPolicy, EncodeDBPolicy, PhysicalMapping
+from .utils import get_filtered_df, is_power_of_two, get_power_of_two_list, get_pareto_df
 
 
 class RAGSweep:
