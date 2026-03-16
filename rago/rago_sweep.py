@@ -301,7 +301,7 @@ class RAGSweep:
                     ]
                     performance_pareto["latency_s"] = performance_pareto[
                         "latency_s"
-                    ].apply(lambda x: int(x * self.rerank_topk / max_batch_size))
+                    ].apply(lambda x: x * (self.rerank_topk / max_batch_size))
                     performance_pareto["qps"] = performance_pareto["qps"].apply(
                         lambda x: int(x * max_batch_size / self.rerank_topk)
                     )
@@ -1655,6 +1655,8 @@ class RAGSweep:
                             for i in range(len(collocated_stage_names))
                         ]
                         qps_per_single_stage += qps_current_stages
+                        if any(lat == 0 for lat in latency_per_batch_current_stages):
+                            print(f"WARNING: zero latency found: stages={collocated_stage_names}, batch_sizes={batch_size_per_collocated_stage}, latencies={latency_per_batch_current_stages}")
                         overall_qps_current_stages = 1 / np.sum(
                             1 / np.array(qps_current_stages)
                         )
