@@ -28,6 +28,9 @@ class RAGSweep:
             "encode": None,
             "retrieval": None,
             "rerank": None,
+            "filter": None,
+            "compress_prefill": None,
+            "compress_decode": None,
             "prefill": None,
             "decode": None,
         },
@@ -769,7 +772,6 @@ class RAGSweep:
         self,
         stage_names,
         filter_full_disaggregation=True,
-        filter_retrieval_at_beginning_or_end=True,
         disaggregate_decode=True,
     ):
         """
@@ -815,13 +817,6 @@ class RAGSweep:
                     or placement_stages[-1][0] != "decode"
                 ):
                     keep_mask = False
-            for collocated_stages in placement_stages:
-                if filter_retrieval_at_beginning_or_end and len(collocated_stages) > 1:
-                    if (
-                        collocated_stages[0] == "retrieval"
-                        or collocated_stages[-1] == "retrieval"
-                    ):
-                        keep_mask = False
 
             if keep_mask:
                 all_placement_strategies.append(placement_stages)
@@ -1252,6 +1247,9 @@ class RAGSweep:
             "rewrite_decode": None,
             "encode": None,
             "rerank": None,
+            "filter": None,
+            "compress_prefill": None,
+            "compress_decode": None,
             "prefill": None,
             "decode": None,
         },
@@ -1411,6 +1409,9 @@ class RAGSweep:
             "rewrite_decode": None,
             "encode": None,
             "rerank": None,
+            "filter": None,
+            "compress_prefill": None,
+            "compress_decode": None,
             "prefill": None,
             "decode": None,
         },
@@ -1713,11 +1714,13 @@ class RAGSweep:
                                 previous_stage_finish_time_LUT_dict_tmp[cache_key]
                             )
 
-                        else:  # decode is the last stage
-                            assert (
-                                "decode" == collocated_stage_names[-1]
-                                and len(collocated_stage_names) == 1
-                            )
+                        else:  # decode is the last stage in this group
+                            assert "decode" == collocated_stage_names[-1]
+                            if num_chips["e2e"] > 1:
+                                assert len(collocated_stage_names) == 1, (
+                                    f"decode must be in its own group for multi-GPU "
+                                    f"(e2e={num_chips['e2e']}), got {collocated_stage_names}"
+                                )
 
                             qps = np.min(qps_per_collocated_stages)
                             qps_per_chip = qps / num_chips["e2e"]
@@ -1742,12 +1745,19 @@ class RAGSweep:
                                 # time between tokens
                                 latency_s_tpot = latency_s_decode / self.dec_steps
                                 # time to first token (on average)
-                                latency_s_ttft = np.average(
-                                    [
-                                        previous_stage_finish_time_LUT[i]
-                                        for i in range(batch_size_request)
-                                    ]
-                                )
+                                if previous_stage_finish_time_LUT is not None:
+                                    latency_s_ttft = np.average(
+                                        [
+                                            previous_stage_finish_time_LUT[i]
+                                            for i in range(batch_size_request)
+                                        ]
+                                    )
+                                else:
+                                    # 1 GPU all-collocated: no prior groups, TTFT = sum of
+                                    # non-decode stage latencies in this group
+                                    latency_s_ttft = sum(
+                                        latency_per_batch_current_stages[:-1]
+                                    )
                                 # end-to-end latency (on average) and throughput
                                 latency_s_e2e = latency_s_ttft + latency_s_decode
 
