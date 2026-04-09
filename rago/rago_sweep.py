@@ -1423,7 +1423,9 @@ class RAGSweep:
         columns = self.get_result_df_columns()
 
         # Find collocated stages
-        if placement_policy == "collocated":
+        if self.all_placement_strategies is not None:
+            all_placement_strategies = self.all_placement_strategies
+        elif placement_policy == "collocated":
             all_placement_strategies = self.get_collocation_combinations(self.stages)
         elif placement_policy == "disaggregated":
             all_placement_strategies = [[[stage] for stage in self.stages]]
