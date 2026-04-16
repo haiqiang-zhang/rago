@@ -772,6 +772,7 @@ class RAGSweep:
         self,
         stage_names,
         filter_full_disaggregation=True,
+        filter_retrieval_at_beginning_or_end=False,
         disaggregate_decode=True,
     ):
         """
@@ -817,6 +818,13 @@ class RAGSweep:
                     or placement_stages[-1][0] != "decode"
                 ):
                     keep_mask = False
+            for collocated_stages in placement_stages:
+                if filter_retrieval_at_beginning_or_end and len(collocated_stages) > 1:
+                    if (
+                        collocated_stages[0] == "retrieval"
+                        or collocated_stages[-1] == "retrieval"
+                    ):
+                        keep_mask = False
 
             if keep_mask:
                 all_placement_strategies.append(placement_stages)
