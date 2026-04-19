@@ -60,13 +60,13 @@ run_sweep_across_systems = True  # Set to True to run the sweep across systems
 # System, model, and sweep configurations
 seq_len_inference_prefill = 512  # prefill len
 dec_steps = 256  # decode len
-rewrite_seq_len_inference_prefill = 32  # rewriter prefill len
-rewrite_seq_len_prefill_with_template = (
-    32  # the prefill is the rewrite instruction template + question
+query_expansion_seq_len_inference_prefill = 32  # query expansion prefill len
+query_expansion_seq_len_prefill_with_template = (
+    32  # prefill = query expansion instruction template + question
 )
-rewrite_dec_steps = 32  # rewriter decode len
-rerank_seq_len_inference_prefill = 128  # reranker prefill len
-rerank_topk = 16  # number of passages to rerank, must be power of two
+query_expansion_dec_steps = 32  # query expansion decode len
+passage_reranker_seq_len_inference_prefill = 128  # reranker prefill len
+passage_reranker_topk = 16  # number of passages to rerank, must be power of two
 num_chips_per_server = 4  # chip/server ratio
 max_batch_size_request = 1024  # max allowed batch sizes to evaluate
 placement_policy = "disaggregated"  # 'collocated' or 'disaggregated'
@@ -84,10 +84,10 @@ min_num_chips = 16
 max_num_chips = 96
 max_num_chips_per_stage = 64
 possible_num_chips = {
-    "rewrite_prefill": [1, 2, 4],
-    "rewrite_decode": [1, 2, 4],
+    "query_expansion_prefill": [1, 2, 4],
+    "query_expansion_decode": [1, 2, 4],
     "encode": None,
-    "rerank": [1, 2, 4, 32],
+    "passage_reranker": [1, 2, 4, 32],
     "prefill": [32],
     "decode": [32],
 }
@@ -172,15 +172,15 @@ def load_test_data():
                 inference_data_selected = get_filtered_df(
                     inference_data_selected,
                     {
-                        "model.seq_len_inference_prefill": rewrite_seq_len_inference_prefill
+                        "model.seq_len_inference_prefill": query_expansion_seq_len_inference_prefill
                     },
                 )
             elif stage == "decode":
                 inference_data_selected = get_filtered_df(
                     inference_data_selected,
                     {
-                        "model.seq_len_inference_prefill": rewrite_seq_len_inference_prefill,
-                        "model.dec_steps": rewrite_dec_steps,
+                        "model.seq_len_inference_prefill": query_expansion_seq_len_inference_prefill,
+                        "model.dec_steps": query_expansion_dec_steps,
                     },
                 )
             processed_rewriter_data = preprocess_data(
@@ -207,13 +207,13 @@ def load_test_data():
             {
                 "model.name": reranker_model_name,
                 "hardware.name": inference_hardware_name,
-                "model.seq_len_inference_prefill": rerank_seq_len_inference_prefill,
+                "model.seq_len_inference_prefill": passage_reranker_seq_len_inference_prefill,
             },
         )
         processed_reranker_data = preprocess_data(
             reranker_data_selected, stage="prefill", return_pareto=True
         )
-        all_sweep_infos["rerank"] = copy.deepcopy(processed_reranker_data)
+        all_sweep_infos["passage_reranker"] = copy.deepcopy(processed_reranker_data)
         print("\nProcessed Reranker Data:")
         print(
             processed_reranker_data
@@ -255,28 +255,28 @@ def init_rago():
         retrieval_policy=RetrievalPolicy(
             run_retrieval=True,
             retrieval_pattern="once",
-            run_rewrite=True,
-            rewrite_seq_len_inference_prefill=rewrite_seq_len_inference_prefill,
-            rewrite_seq_len_prefill_with_template=rewrite_seq_len_prefill_with_template,
-            rewrite_dec_steps=rewrite_dec_steps,
-            run_rerank=True,
-            rerank_seq_len_inference_prefill=rerank_seq_len_inference_prefill,
-            rerank_topk=rerank_topk,
+            run_query_expansion=True,
+            query_expansion_seq_len_inference_prefill=query_expansion_seq_len_inference_prefill,
+            query_expansion_seq_len_prefill_with_template=query_expansion_seq_len_prefill_with_template,
+            query_expansion_dec_steps=query_expansion_dec_steps,
+            run_passage_reranker=True,
+            passage_reranker_seq_len_inference_prefill=passage_reranker_seq_len_inference_prefill,
+            passage_reranker_topk=passage_reranker_topk,
         ),
         stages=[
-            "rewrite_prefill",
-            "rewrite_decode",
+            "query_expansion_prefill",
+            "query_expansion_decode",
             "retrieval",
-            "rerank",
+            "passage_reranker",
             "prefill",
             "decode",
         ],
         sweep_df={
-            "rewrite_prefill": all_sweep_infos["rewrite-prefill"],
-            "rewrite_decode": all_sweep_infos["rewrite-decode"],
+            "query_expansion_prefill": all_sweep_infos["rewrite-prefill"],
+            "query_expansion_decode": all_sweep_infos["rewrite-decode"],
             "encode": None,
             "retrieval": all_sweep_infos["retrieval"],
-            "rerank": all_sweep_infos["rerank"],
+            "passage_reranker": all_sweep_infos["passage_reranker"],
             "prefill": all_sweep_infos["inference-prefill"],
             "decode": all_sweep_infos["inference-decode"],
         },
@@ -298,9 +298,9 @@ def test_assemble_cost():
         physical_mapping=PhysicalMapping(
             num_retrieval_servers=num_retrieval_servers,
             num_chips={
-                "rewrite_prefill": num_chips_rewrite_prefill,
-                "rewrite_decode": num_chips_rewrite_decode,
-                "rerank": num_chips_rerank,
+                "query_expansion_prefill": num_chips_rewrite_prefill,
+                "query_expansion_decode": num_chips_rewrite_decode,
+                "passage_reranker": num_chips_rerank,
                 "prefill": num_chips_prefill,
                 "decode": num_chips_decode,
             },

@@ -12,18 +12,18 @@ class RetrievalPolicy:
     retrieval_pattern: str | None = None
     retrieval_interval: int | None = None
 
-    # Rewriter model
-    run_rewrite: bool = False
-    rewrite_seq_len_inference_prefill: int | None = None
-    rewrite_seq_len_prefill_with_template: int | None = (
-        None  # the prefill is the rewrite instruction template + question
+    # Query expansion model
+    run_query_expansion: bool = False
+    query_expansion_seq_len_inference_prefill: int | None = None
+    query_expansion_seq_len_prefill_with_template: int | None = (
+        None  # prefill = query expansion instruction template + question
     )
-    rewrite_dec_steps: int | None = None
+    query_expansion_dec_steps: int | None = None
 
-    # Reranker model
-    run_rerank: bool = False
-    rerank_seq_len_inference_prefill: int | None = None
-    rerank_topk: int | None = None
+    # Passage reranker model
+    run_passage_reranker: bool = False
+    passage_reranker_seq_len_inference_prefill: int | None = None
+    passage_reranker_topk: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -41,13 +41,13 @@ class PhysicalMapping:
         self,
         num_retrieval_servers: int = 0,
         num_chips: dict[str, int] = {
-            "rewrite_prefill": 0,
-            "rewrite_decode": 0,
+            "query_expansion_prefill": 0,
+            "query_expansion_decode": 0,
             "encode": 0,
-            "rerank": 0,
-            "filter": 0,
-            "compress_prefill": 0,
-            "compress_decode": 0,
+            "passage_reranker": 0,
+            "passage_filter": 0,
+            "passage_compressor_prefill": 0,
+            "passage_compressor_decode": 0,
             "prefill": 0,
             "decode": 0,
             "e2e": 0,

@@ -23,14 +23,14 @@ class RAGSweep:
         encode_db_policy: EncodeDBPolicy,
         stages: list[str] = ["retrieval", "prefill", "decode"],
         sweep_df: dict[str, pd.DataFrame | None] = {
-            "rewrite_prefill": None,
-            "rewrite_decode": None,
+            "query_expansion_prefill": None,
+            "query_expansion_decode": None,
             "encode": None,
             "retrieval": None,
-            "rerank": None,
-            "filter": None,
-            "compress_prefill": None,
-            "compress_decode": None,
+            "passage_reranker": None,
+            "passage_filter": None,
+            "passage_compressor_prefill": None,
+            "passage_compressor_decode": None,
             "prefill": None,
             "decode": None,
         },
@@ -92,51 +92,51 @@ class RAGSweep:
             if "retrieval" in self.stages:
                 self.stages.remove("retrieval")
 
-        if retrieval_policy.run_rewrite:
-            assert "rewrite_prefill" in self.stages
-            assert "rewrite_decode" in self.stages
-            self.rewrite_seq_len_inference_prefill = (
-                retrieval_policy.rewrite_seq_len_inference_prefill
+        if retrieval_policy.run_query_expansion:
+            assert "query_expansion_prefill" in self.stages
+            assert "query_expansion_decode" in self.stages
+            self.query_expansion_seq_len_inference_prefill = (
+                retrieval_policy.query_expansion_seq_len_inference_prefill
             )
-            self.rewrite_seq_len_prefill_with_template = (
-                retrieval_policy.rewrite_seq_len_prefill_with_template
+            self.query_expansion_seq_len_prefill_with_template = (
+                retrieval_policy.query_expansion_seq_len_prefill_with_template
             )
-            self.rewrite_dec_steps = retrieval_policy.rewrite_dec_steps
-            assert self.rewrite_seq_len_inference_prefill is not None
-            assert self.rewrite_seq_len_prefill_with_template is not None
-            assert self.rewrite_dec_steps is not None
-            self.sweep_df["rewrite_prefill"] = get_filtered_df(
-                self.sweep_df["rewrite_prefill"],
-                {"seq_len_inference_prefill": self.rewrite_seq_len_inference_prefill},
+            self.query_expansion_dec_steps = retrieval_policy.query_expansion_dec_steps
+            assert self.query_expansion_seq_len_inference_prefill is not None
+            assert self.query_expansion_seq_len_prefill_with_template is not None
+            assert self.query_expansion_dec_steps is not None
+            self.sweep_df["query_expansion_prefill"] = get_filtered_df(
+                self.sweep_df["query_expansion_prefill"],
+                {"seq_len_inference_prefill": self.query_expansion_seq_len_inference_prefill},
             )
-            self.sweep_df["rewrite_decode"] = get_filtered_df(
-                self.sweep_df["rewrite_decode"],
+            self.sweep_df["query_expansion_decode"] = get_filtered_df(
+                self.sweep_df["query_expansion_decode"],
                 {
-                    "seq_len_inference_prefill": self.rewrite_seq_len_prefill_with_template,
-                    "dec_steps": self.rewrite_dec_steps,
+                    "seq_len_inference_prefill": self.query_expansion_seq_len_prefill_with_template,
+                    "dec_steps": self.query_expansion_dec_steps,
                 },
             )
         else:
-            if "rewrite_prefill" in self.stages:
-                self.stages.remove("rewrite_prefill")
-            if "rewrite_decode" in self.stages:
-                self.stages.remove("rewrite_decode")
+            if "query_expansion_prefill" in self.stages:
+                self.stages.remove("query_expansion_prefill")
+            if "query_expansion_decode" in self.stages:
+                self.stages.remove("query_expansion_decode")
 
-        if retrieval_policy.run_rerank:
-            assert "rerank" in self.stages
-            self.rerank_seq_len_inference_prefill = (
-                retrieval_policy.rerank_seq_len_inference_prefill
+        if retrieval_policy.run_passage_reranker:
+            assert "passage_reranker" in self.stages
+            self.passage_reranker_seq_len_inference_prefill = (
+                retrieval_policy.passage_reranker_seq_len_inference_prefill
             )
-            self.rerank_topk = retrieval_policy.rerank_topk
-            assert self.rerank_seq_len_inference_prefill is not None
-            assert self.rerank_topk is not None
-            self.sweep_df["rerank"] = get_filtered_df(
-                self.sweep_df["rerank"],
-                {"seq_len_inference_prefill": self.rerank_seq_len_inference_prefill},
+            self.passage_reranker_topk = retrieval_policy.passage_reranker_topk
+            assert self.passage_reranker_seq_len_inference_prefill is not None
+            assert self.passage_reranker_topk is not None
+            self.sweep_df["passage_reranker"] = get_filtered_df(
+                self.sweep_df["passage_reranker"],
+                {"seq_len_inference_prefill": self.passage_reranker_seq_len_inference_prefill},
             )
         else:
-            if "rerank" in self.stages:
-                self.stages.remove("rerank")
+            if "passage_reranker" in self.stages:
+                self.stages.remove("passage_reranker")
 
         assert "prefill" in self.stages and "decode" in self.stages
         assert self.stages[-1] == "decode"
@@ -284,33 +284,33 @@ class RAGSweep:
             )
 
         # For 'rerank' stage, handle batch size shifting
-        elif stage == "rerank":
+        elif stage == "passage_reranker":
             assert num_chips is not None
             if num_chips not in self.performance_pareto_dict[stage]:
                 performance_pareto = get_filtered_df(
                     self.sweep_df[stage], {"num_chips": num_chips}
                 )
                 max_batch_size = np.max(performance_pareto["batch_size"].tolist())
-                if max_batch_size >= self.rerank_topk:
+                if max_batch_size >= self.passage_reranker_topk:
                     performance_pareto = performance_pareto.loc[
-                        performance_pareto["batch_size"] >= self.rerank_topk
+                        performance_pareto["batch_size"] >= self.passage_reranker_topk
                     ]
                     performance_pareto["batch_size"] = performance_pareto[
                         "batch_size"
-                    ].apply(lambda x: int(x / self.rerank_topk))
+                    ].apply(lambda x: int(x / self.passage_reranker_topk))
                 else:
                     performance_pareto = performance_pareto.loc[
                         performance_pareto["batch_size"] == max_batch_size
                     ]
                     performance_pareto["latency_s"] = performance_pareto[
                         "latency_s"
-                    ].apply(lambda x: x * (self.rerank_topk / max_batch_size))
+                    ].apply(lambda x: x * (self.passage_reranker_topk / max_batch_size))
                     performance_pareto["qps"] = performance_pareto["qps"].apply(
-                        lambda x: int(x * max_batch_size / self.rerank_topk)
+                        lambda x: int(x * max_batch_size / self.passage_reranker_topk)
                     )
                     performance_pareto["qps_per_chip"] = performance_pareto[
                         "qps_per_chip"
-                    ].apply(lambda x: int(x * max_batch_size / self.rerank_topk))
+                    ].apply(lambda x: int(x * max_batch_size / self.passage_reranker_topk))
                     performance_pareto["batch_size"] = 1
 
                 self.performance_pareto_dict[stage][num_chips] = performance_pareto
@@ -1251,13 +1251,13 @@ class RAGSweep:
         placement_policy: str = "disaggregated",  # 'collocated' or 'disaggregated'
         collocation_strategy: list[list[str]] | None = None,
         possible_num_chips: dict[str, int] = {
-            "rewrite_prefill": None,
-            "rewrite_decode": None,
+            "query_expansion_prefill": None,
+            "query_expansion_decode": None,
             "encode": None,
-            "rerank": None,
-            "filter": None,
-            "compress_prefill": None,
-            "compress_decode": None,
+            "passage_reranker": None,
+            "passage_filter": None,
+            "passage_compressor_prefill": None,
+            "passage_compressor_decode": None,
             "prefill": None,
             "decode": None,
         },
@@ -1305,7 +1305,7 @@ class RAGSweep:
                     max_num_chips=max_num_chips_per_stage,
                     max_num_retrieval_servers=None,
                 )
-                if stage == "encode" or stage == "rerank":
+                if stage == "encode" or stage == "passage_reranker":
                     possible_num_chips_dict[stage] = get_power_of_two_list(
                         max_num_chips_per_stage
                     )
@@ -1413,13 +1413,13 @@ class RAGSweep:
         no_microbatching: bool = True,
         verbose_microbatching_options=False,  # if true, allow request batch size > min(stage batch sizes before decode)
         possible_num_chips: dict[str, int] = {
-            "rewrite_prefill": None,
-            "rewrite_decode": None,
+            "query_expansion_prefill": None,
+            "query_expansion_decode": None,
             "encode": None,
-            "rerank": None,
-            "filter": None,
-            "compress_prefill": None,
-            "compress_decode": None,
+            "passage_reranker": None,
+            "passage_filter": None,
+            "passage_compressor_prefill": None,
+            "passage_compressor_decode": None,
             "prefill": None,
             "decode": None,
         },
@@ -1678,7 +1678,7 @@ class RAGSweep:
                             # whether it is a disaggregated query rewriter decoder service
                             if (
                                 len(collocated_stage_names) == 1
-                                and collocated_stage_names[0] == "rewrite_decode"
+                                and collocated_stage_names[0] == "query_expansion_decode"
                             ):
                                 # The latency is increased by decode latency
                                 current_stage_finish_time_LUT = {}
