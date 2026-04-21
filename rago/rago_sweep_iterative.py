@@ -10,9 +10,9 @@ import time
 
 from typing import Any, Dict
 
-from config import PhysicalMapping
-from utils import get_power_of_two_list
-from rago_sweep import RAGSweep
+from .config import PhysicalMapping
+from .utils import get_power_of_two_list
+from .rago_sweep import RAGSweep
 
 
 class IterativeRAGSweep(RAGSweep):
