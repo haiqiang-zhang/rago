@@ -20,6 +20,13 @@ class RetrievalPolicy:
     )
     query_expansion_dec_steps: int | None = None
 
+    # Per-user fanout introduced by the query rewriter: one rewriter call
+    # produces this many sub-queries, each of which hits ``encode`` and
+    # ``retrieval`` independently. ``None``/1 means no fanout (1 rewrite
+    # per user request, the historical default). Mirrors how
+    # ``passage_reranker_topk`` multiplies workload at the reranker stage.
+    query_expansion_fanout: int | None = None
+
     # Passage reranker model
     run_passage_reranker: bool = False
     passage_reranker_seq_len_inference_prefill: int | None = None

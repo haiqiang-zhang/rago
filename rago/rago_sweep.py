@@ -92,6 +92,16 @@ class RAGSweep:
             if "retrieval" in self.stages:
                 self.stages.remove("retrieval")
 
+        # Per-user fanout from the query rewriter (one rewriter call → N
+        # sub-queries that each hit encode + retrieval). ``None`` and ``<= 1``
+        # both mean "no fanout"; only ``> 1`` triggers the work-multiplier
+        # math in get_performance_pareto_one_stage.
+        self.query_expansion_fanout = (
+            int(retrieval_policy.query_expansion_fanout)
+            if retrieval_policy.query_expansion_fanout is not None
+            else None
+        )
+
         if retrieval_policy.run_query_expansion:
             assert "query_expansion_prefill" in self.stages
             assert "query_expansion_decode" in self.stages
@@ -257,6 +267,80 @@ class RAGSweep:
                 # Update the performance dictionary for inference with the modified DataFrame
                 self.sweep_df[stage] = df_inference
 
+    @staticmethod
+    def _apply_fanout(performance_pareto, fanout):
+        """Convert a stage's Pareto DataFrame from ``work-item`` units (one
+        row per call's batch_size) to ``user-request`` units, where each
+        user produces ``fanout`` work items at this stage.
+
+        Two regimes:
+
+        1. ``max_batch_size >= fanout`` — a single batch call can hold at
+           least one user. Filter to rows ≥ fanout, then map
+           ``work_batch / fanout`` → user_batch and snap to floor-pow2
+           bucket (the downstream latency lookup is indexed by pow2
+           user-batch sizes — see ``get_latency_from_pareto``). When
+           multiple work-batch rows fall into the same pow2 user-batch
+           bucket, keep the row with the lowest latency.
+        2. ``max_batch_size < fanout`` — one user's work spans multiple
+           calls. Clamp to ``max_batch_size`` row, multiply latency by
+           ``fanout / max_batch_size`` (more calls per user), and
+           proportionally shrink ``qps`` / ``qps_per_chip``. Set
+           ``batch_size = 1`` (one user per "logical request unit").
+
+        ``fanout`` may be any positive int — it is a measured workload
+        property (e.g. avg # of sub-queries from query_expansion) and is
+        NOT required to be a power of two. The pow2 invariant lives on
+        the user-batch axis (the index of the latency lookup table) and
+        is enforced here, not on the workload value.
+
+        ``None``/``<= 1`` → identity (no fanout to apply).
+        """
+        if fanout is None or fanout <= 1:
+            return performance_pareto
+        max_batch_size = np.max(performance_pareto["batch_size"].tolist())
+        if max_batch_size >= fanout:
+            performance_pareto = performance_pareto.loc[
+                performance_pareto["batch_size"] >= fanout
+            ].copy()
+            # nominal user-batch = work_batch / fanout (may be non-integer
+            # / non-pow2 for arbitrary fanout). Snap each row to the
+            # largest pow2 <= nominal — i.e. floor-to-pow2.
+            def _floor_pow2(x):
+                n = int(x)
+                if n < 1:
+                    return 0
+                return 1 << (n.bit_length() - 1)
+            nominal = performance_pareto["batch_size"] / float(fanout)
+            performance_pareto["batch_size"] = nominal.apply(_floor_pow2)
+            performance_pareto = performance_pareto.loc[
+                performance_pareto["batch_size"] >= 1
+            ]
+            # Multiple work-batch rows may collapse onto the same pow2
+            # user-batch bucket; keep the row with lowest latency per
+            # bucket (the pareto winner at that user-batch).
+            performance_pareto = (
+                performance_pareto.sort_values("latency_s")
+                .drop_duplicates(subset="batch_size", keep="first")
+                .sort_values("batch_size")
+                .reset_index(drop=True)
+            )
+        else:
+            performance_pareto = performance_pareto.loc[
+                performance_pareto["batch_size"] == max_batch_size
+            ]
+            performance_pareto["latency_s"] = performance_pareto["latency_s"].apply(
+                lambda x: x * (fanout / max_batch_size)
+            )
+            performance_pareto["qps"] = performance_pareto["qps"].apply(
+                lambda x: int(x * max_batch_size / fanout)
+            )
+            performance_pareto["qps_per_chip"] = performance_pareto["qps_per_chip"].apply(
+                lambda x: int(x * max_batch_size / fanout)
+            )
+            performance_pareto["batch_size"] = 1
+        return performance_pareto
+
     def get_performance_pareto_one_stage(
         self,
         stage,
@@ -275,6 +359,11 @@ class RAGSweep:
                 performance_pareto = self.get_pareto_distributed_retrieval(
                     num_retrieval_servers=num_retrieval_servers,
                 )
+                # Query-expansion fanout: each user request hits retrieval
+                # ``query_expansion_fanout`` times (one per sub-query).
+                performance_pareto = self._apply_fanout(
+                    performance_pareto, self.query_expansion_fanout
+                )
                 self.performance_pareto_dict[stage][
                     num_retrieval_servers
                 ] = performance_pareto
@@ -283,6 +372,21 @@ class RAGSweep:
                 self.performance_pareto_dict[stage][num_retrieval_servers]
             )
 
+        # 'encode' stage: same fanout as retrieval (each sub-query needs
+        # its own embedding before it can be sent to the FAISS index).
+        elif stage == "encode":
+            assert num_chips is not None
+            if num_chips not in self.performance_pareto_dict[stage]:
+                performance_pareto = get_filtered_df(
+                    self.sweep_df[stage], {"num_chips": num_chips}
+                )
+                performance_pareto = self._apply_fanout(
+                    performance_pareto, self.query_expansion_fanout
+                )
+                self.performance_pareto_dict[stage][num_chips] = performance_pareto
+
+            return copy.deepcopy(self.performance_pareto_dict[stage][num_chips])
+
         # For 'rerank' stage, handle batch size shifting
         elif stage == "passage_reranker":
             assert num_chips is not None
@@ -290,29 +394,12 @@ class RAGSweep:
                 performance_pareto = get_filtered_df(
                     self.sweep_df[stage], {"num_chips": num_chips}
                 )
-                max_batch_size = np.max(performance_pareto["batch_size"].tolist())
-                if max_batch_size >= self.passage_reranker_topk:
-                    performance_pareto = performance_pareto.loc[
-                        performance_pareto["batch_size"] >= self.passage_reranker_topk
-                    ]
-                    performance_pareto["batch_size"] = performance_pareto[
-                        "batch_size"
-                    ].apply(lambda x: int(x / self.passage_reranker_topk))
-                else:
-                    performance_pareto = performance_pareto.loc[
-                        performance_pareto["batch_size"] == max_batch_size
-                    ]
-                    performance_pareto["latency_s"] = performance_pareto[
-                        "latency_s"
-                    ].apply(lambda x: x * (self.passage_reranker_topk / max_batch_size))
-                    performance_pareto["qps"] = performance_pareto["qps"].apply(
-                        lambda x: int(x * max_batch_size / self.passage_reranker_topk)
-                    )
-                    performance_pareto["qps_per_chip"] = performance_pareto[
-                        "qps_per_chip"
-                    ].apply(lambda x: int(x * max_batch_size / self.passage_reranker_topk))
-                    performance_pareto["batch_size"] = 1
-
+                # passage_reranker_topk already encodes per-user fanout at
+                # this stage (= retrieval top_k × query_expansion_fanout,
+                # computed upstream in rag_assembly).
+                performance_pareto = self._apply_fanout(
+                    performance_pareto, self.passage_reranker_topk
+                )
                 self.performance_pareto_dict[stage][num_chips] = performance_pareto
 
             return copy.deepcopy(self.performance_pareto_dict[stage][num_chips])
