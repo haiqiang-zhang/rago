@@ -1813,7 +1813,16 @@ class RAGSweep:
 
                         else:  # decode is the last stage in this group
                             assert "decode" == collocated_stage_names[-1]
-                            if num_chips["e2e"] > 1:
+                            # A collocated group is replicated data-parallel across
+                            # its chips (see run_sweep_get_hardware_mappings), so a
+                            # multi-GPU group containing decode is a unified
+                            # prefill+decode engine replicated N ways — fully
+                            # modelable here. Only forbid it when the caller has
+                            # opted out of decode collocation (allow_decode_collocation
+                            # is the single source of truth, set in rag_assembly).
+                            if num_chips["e2e"] > 1 and not getattr(
+                                self, "allow_decode_collocation", False
+                            ):
                                 assert len(collocated_stage_names) == 1, (
                                     f"decode must be in its own group for multi-GPU "
                                     f"(e2e={num_chips['e2e']}), got {collocated_stage_names}"
