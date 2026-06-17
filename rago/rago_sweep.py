@@ -37,10 +37,19 @@ class RAGSweep:
         seq_len_inference_prefill: int = 512,
         dec_steps: int = 256,
         num_chips_per_server: int = 4,
+        prefill_fanout: float | None = None,
     ):
         # Raw performance sweeps
         self.stages = stages
         self.sweep_df = sweep_df
+        # Per-user PREFILL fanout: agentic pipelines call the generator
+        # ``prefill_fanout`` times per user request (one per generate round),
+        # each at its own (growing) seq_len. Mirrors ``query_expansion_fanout``
+        # (retrieval/encode) and ``passage_reranker_topk`` (rerank) — the same
+        # ``_apply_fanout`` work→user-unit conversion, applied to the prefill
+        # stage. ``None``/``<=1`` → identity (sequential RAG / RAGAssembly's
+        # default construction → byte-unchanged).
+        self.prefill_fanout = prefill_fanout
 
         # Policies on retrieval, db encoding, and integration
         self.retrieval_policy = retrieval_policy
@@ -404,7 +413,25 @@ class RAGSweep:
 
             return copy.deepcopy(self.performance_pareto_dict[stage][num_chips])
 
-        # For other stages like 'prefill', 'decode', etc.
+        # 'prefill' stage: per-user fanout = ``prefill_fanout`` (agentic
+        # generate rounds). One generate round = one prefill call, so a user
+        # request issues ``prefill_fanout`` prefill calls. Sequential RAG /
+        # RAGAssembly's default construction pass ``prefill_fanout=None`` →
+        # _apply_fanout is identity, so this branch == the generic else below.
+        elif stage == "prefill":
+            assert num_chips is not None
+            if num_chips not in self.performance_pareto_dict[stage]:
+                performance_pareto = get_filtered_df(
+                    self.sweep_df[stage], {"num_chips": num_chips}
+                )
+                performance_pareto = self._apply_fanout(
+                    performance_pareto, self.prefill_fanout
+                )
+                self.performance_pareto_dict[stage][num_chips] = performance_pareto
+
+            return copy.deepcopy(self.performance_pareto_dict[stage][num_chips])
+
+        # For other stages like 'decode', etc.
         else:
             assert num_chips is not None
             if num_chips not in self.performance_pareto_dict[stage]:
