@@ -975,10 +975,19 @@ class RAGSweep:
         scheduling_policy: str = "continuous-batching",
         max_batch_size_request: int = 1024,
         no_microbatching: bool = True,
+        fixed_batch_size_request: int | None = None,
+        fixed_batch_size_decode: int | None = None,
     ):
         placement_policy = physical_mapping.placement_policy
         assert placement_policy in ["disaggregated", "collocated"]
         assert scheduling_policy in ["continuous-batching"]
+        if fixed_batch_size_request is not None:
+            fixed_batch_size_request = int(fixed_batch_size_request)
+            assert is_power_of_two(fixed_batch_size_request)
+            if fixed_batch_size_decode is None:
+                fixed_batch_size_decode = fixed_batch_size_request
+            fixed_batch_size_decode = int(fixed_batch_size_decode)
+            assert is_power_of_two(fixed_batch_size_decode)
 
         # Define the result dataframe
         columns = self.get_result_df_columns()
@@ -1032,26 +1041,45 @@ class RAGSweep:
 
             possible_batch_sizes_dict = {}
             for stage in self.stages:
-                possible_batch_sizes_dict[stage] = (
-                    self.get_possible_batch_sizes_one_stage(
-                        stage,
-                        max_batch_size_request=(
-                            max_batch_size_request if stage != "decode" else None
-                        ),
-                        num_chips=num_chips[stage] if stage != "retrieval" else None,
-                        num_retrieval_servers=num_retrieval_servers,
+                if fixed_batch_size_request is not None:
+                    possible_batch_sizes_dict[stage] = [
+                        (
+                            fixed_batch_size_decode
+                            if stage == "decode"
+                            else fixed_batch_size_request
+                        )
+                    ]
+                else:
+                    possible_batch_sizes_dict[stage] = (
+                        self.get_possible_batch_sizes_one_stage(
+                            stage,
+                            max_batch_size_request=(
+                                max_batch_size_request if stage != "decode" else None
+                            ),
+                            num_chips=(
+                                num_chips[stage] if stage != "retrieval" else None
+                            ),
+                            num_retrieval_servers=num_retrieval_servers,
+                        )
                     )
-                )
 
             latency_table_dict = {}
             for stage in self.stages:
-                latency_table_dict[stage] = self.get_latency_lookup_table_one_stage(
-                    stage,
-                    max_batch_size_request=(
+                if fixed_batch_size_request is not None:
+                    stage_max_batch_size = (
+                        fixed_batch_size_decode
+                        if stage == "decode"
+                        else fixed_batch_size_request
+                    )
+                else:
+                    stage_max_batch_size = (
                         max_batch_size_request
                         if stage != "decode"
                         else np.max(possible_batch_sizes_dict[stage])
-                    ),
+                    )
+                latency_table_dict[stage] = self.get_latency_lookup_table_one_stage(
+                    stage,
+                    max_batch_size_request=stage_max_batch_size,
                     num_chips=num_chips[stage] if stage != "retrieval" else None,
                     num_retrieval_servers=num_retrieval_servers,
                 )
@@ -1061,11 +1089,16 @@ class RAGSweep:
 
             # Handle microbatching or non-microbatching cases
             if no_microbatching:
-                possible_batch_sizes_request = get_power_of_two_list(
-                    max_batch_size_request
-                )
+                if fixed_batch_size_request is not None:
+                    possible_batch_sizes_request = [fixed_batch_size_request]
+                    decode_batch_sizes = [fixed_batch_size_decode]
+                else:
+                    possible_batch_sizes_request = get_power_of_two_list(
+                        max_batch_size_request
+                    )
+                    decode_batch_sizes = possible_batch_sizes_dict["decode"]
                 batch_sizes_combinations_two_stages = product(
-                    possible_batch_sizes_request, possible_batch_sizes_dict["decode"]
+                    possible_batch_sizes_request, decode_batch_sizes
                 )
 
                 batch_sizes_combinations_before_filtering = []
