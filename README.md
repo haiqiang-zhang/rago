@@ -58,6 +58,22 @@ The results can be found in [llm_sim/genz_scripts/perf_results](llm_sim/genz_scr
 
 Any other simulators or real profiles can be looped in, as long as they produce the same performance csv format. 
 
+### Concrete device mappings
+
+In the RAG-Stack integration, RAGO owns physical candidate materialization.
+`enumerate_concrete_device_mappings` expands a chip-count placement into the
+topology-distinct ordered device layouts that can change model cost (for
+example same-pair versus cross-pair placement on a 4-GPU, two-pair fabric).
+Each returned `PhysicalMapping` carries `available_devices`,
+`resource_group_devices`, `stage_devices`, and a stable `device_layout_id`.
+
+Within one collocation group, smaller co-resident engines follow a canonical
+balanced policy: in stage order they rotate round-robin over the group's
+ordered ranks; full-width engines occupy all ranks. Consequently alternate
+rider stacking is not a separate search dimension. This is the same policy the
+measured RAG-Stack layout resolver uses, so replay and candidate search retain
+the same stage-to-device occupancy.
+
 ### Retrieval Performance
 
 The retrieval performance model and its usage is decribed in [retrieval_sim/README.md](retrieval_sim/README.md). The performance model is based on the [ScaNN](https://github.com/google-research/google-research/tree/master/scann) vector search library.

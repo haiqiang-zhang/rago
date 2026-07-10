@@ -11,7 +11,12 @@ import time
 from itertools import product
 from typing import Any, Dict
 
-from .config import RetrievalPolicy, EncodeDBPolicy, PhysicalMapping
+from .config import (
+    RetrievalPolicy,
+    EncodeDBPolicy,
+    PhysicalMapping,
+    enumerate_concrete_device_mappings,
+)
 from .utils import get_filtered_df, is_power_of_two, get_power_of_two_list, get_pareto_df
 
 
@@ -38,6 +43,9 @@ class RAGSweep:
         dec_steps: int = 256,
         num_chips_per_server: int = 4,
         prefill_fanout: float | None = None,
+        available_devices: list[str] | None = None,
+        device_links: dict | None = None,
+        max_device_layouts_per_mapping: int = 64,
     ):
         # Raw performance sweeps
         self.stages = stages
@@ -60,6 +68,11 @@ class RAGSweep:
 
         # Physical constant constraint
         self.num_chips_per_server = num_chips_per_server
+        self.available_devices = list(available_devices or [])
+        self.device_links = dict(device_links or {})
+        self.max_device_layouts_per_mapping = max(
+            1, int(max_device_layouts_per_mapping)
+        )
 
         # Get filtered df per stage
         self.sweep_df["prefill"] = get_filtered_df(
@@ -961,9 +974,43 @@ class RAGSweep:
         columns += ["num_retrieval_servers"]
         columns += ["placement_policy", "collocation_strategy", "scheduling_policy"]
         columns += [
+            "available_devices",
+            "resource_group_devices",
+            "stage_devices",
+            "device_layout_id",
+        ]
+        columns += [
             "placement_and_resource_id"
         ]  # The placement + resource allocation combination
         return columns
+
+    def _device_result_fields(self, physical_mapping: PhysicalMapping) -> dict:
+        """Concrete-device provenance copied verbatim to every candidate row."""
+        return {
+            "available_devices": list(physical_mapping.available_devices),
+            "resource_group_devices": [
+                list(devices)
+                for devices in physical_mapping.resource_group_devices
+            ],
+            "stage_devices": {
+                stage: list(devices)
+                for stage, devices in physical_mapping.stage_devices.items()
+            },
+            "device_layout_id": physical_mapping.device_layout_id,
+        }
+
+    def _device_inventory(self, max_num_chips: int) -> list[str]:
+        if self.available_devices:
+            return list(self.available_devices)
+        if self.device_links:
+            raise ValueError(
+                "A heterogeneous device topology was supplied without "
+                "available_devices; refusing a homogeneous/device-count fallback."
+            )
+        # Backward-compatible homogeneous RAGO callers have never named their
+        # chips.  Give those abstract chips deterministic identities; rag_stack
+        # always passes its real cuda:* inventory.
+        return [f"device:{i}" for i in range(max(0, int(max_num_chips)))]
 
     """ Helper Functions Ends """
 
@@ -978,6 +1025,29 @@ class RAGSweep:
         fixed_batch_size_request: int | None = None,
         fixed_batch_size_decode: int | None = None,
     ):
+        if not physical_mapping.has_concrete_devices:
+            needed = int(
+                physical_mapping.num_chips.get("e2e", 0)
+                or sum(
+                    int(value or 0)
+                    for key, value in physical_mapping.num_chips.items()
+                    if key != "e2e"
+                )
+            )
+            layouts = enumerate_concrete_device_mappings(
+                physical_mapping,
+                available_devices=self._device_inventory(needed),
+                device_links=self.device_links,
+                max_layouts=self.max_device_layouts_per_mapping,
+            )
+            if len(layouts) != 1:
+                raise ValueError(
+                    "assemble_cost received a chip-count-only mapping that has "
+                    f"{len(layouts)} topology-distinct physical layouts; pass "
+                    "stage_devices/resource_group_devices explicitly or use "
+                    "run_sweep_across_systems to enumerate them as candidates."
+                )
+            physical_mapping = layouts[0]
         placement_policy = physical_mapping.placement_policy
         assert placement_policy in ["disaggregated", "collocated"]
         assert scheduling_policy in ["continuous-batching"]
@@ -1352,6 +1422,7 @@ class RAGSweep:
                             "num_retrieval_servers": num_retrieval_servers,
                             "collocation_strategy": str(collocation_strategy),
                             "placement_and_resource_id": 0,
+                            **self._device_result_fields(physical_mapping),
                         }
                         for i, stage_name in enumerate(self.stages):
                             result_dict[f"qps_{stage_name}"] = qps_per_single_stage[i]
@@ -1545,7 +1616,14 @@ class RAGSweep:
             physical_mapping.num_chips["e2e"] = total_num_chips
             physical_mapping.placement_policy = placement_policy
             physical_mapping.collocation_strategy = collocation_strategy
-            possible_physical_mappings.append(physical_mapping)
+            possible_physical_mappings.extend(
+                enumerate_concrete_device_mappings(
+                    physical_mapping,
+                    available_devices=self._device_inventory(max_num_chips),
+                    device_links=self.device_links,
+                    max_layouts=self.max_device_layouts_per_mapping,
+                )
+            )
 
         return possible_physical_mappings
 
@@ -1939,6 +2017,7 @@ class RAGSweep:
                                     "num_retrieval_servers": num_retrieval_servers,
                                     "collocation_strategy": str(strategy),
                                     "placement_and_resource_id": placement_and_resource_id,
+                                    **self._device_result_fields(physical_mapping),
                                 }
                                 # print("written flatten_batch_size: ", flatten_batch_size, "\tbatch_size_request", batch_size_request)
                                 for i, stage_name in enumerate(self.stages):
