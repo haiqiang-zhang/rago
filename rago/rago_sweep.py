@@ -1024,6 +1024,7 @@ class RAGSweep:
         no_microbatching: bool = True,
         fixed_batch_size_request: int | None = None,
         fixed_batch_size_decode: int | None = None,
+        possible_batch_sizes_decode: list[int] | None = None,
     ):
         if not physical_mapping.has_concrete_devices:
             needed = int(
@@ -1058,6 +1059,14 @@ class RAGSweep:
                 fixed_batch_size_decode = fixed_batch_size_request
             fixed_batch_size_decode = int(fixed_batch_size_decode)
             assert is_power_of_two(fixed_batch_size_decode)
+        if possible_batch_sizes_decode is not None:
+            possible_batch_sizes_decode = sorted({
+                int(value) for value in possible_batch_sizes_decode
+            })
+            assert possible_batch_sizes_decode
+            assert all(
+                is_power_of_two(value) for value in possible_batch_sizes_decode
+            )
 
         # Define the result dataframe
         columns = self.get_result_df_columns()
@@ -1120,18 +1129,23 @@ class RAGSweep:
                         )
                     ]
                 else:
-                    possible_batch_sizes_dict[stage] = (
-                        self.get_possible_batch_sizes_one_stage(
-                            stage,
-                            max_batch_size_request=(
-                                max_batch_size_request if stage != "decode" else None
-                            ),
-                            num_chips=(
-                                num_chips[stage] if stage != "retrieval" else None
-                            ),
-                            num_retrieval_servers=num_retrieval_servers,
+                    if stage == "decode" and possible_batch_sizes_decode is not None:
+                        possible_batch_sizes_dict[stage] = list(
+                            possible_batch_sizes_decode
                         )
-                    )
+                    else:
+                        possible_batch_sizes_dict[stage] = (
+                            self.get_possible_batch_sizes_one_stage(
+                                stage,
+                                max_batch_size_request=(
+                                    max_batch_size_request if stage != "decode" else None
+                                ),
+                                num_chips=(
+                                    num_chips[stage] if stage != "retrieval" else None
+                                ),
+                                num_retrieval_servers=num_retrieval_servers,
+                            )
+                        )
 
             latency_table_dict = {}
             for stage in self.stages:
@@ -1648,9 +1662,18 @@ class RAGSweep:
             "prefill": None,
             "decode": None,
         },
+        possible_batch_sizes_decode: list[int] | None = None,
     ):
         assert placement_policy in ["disaggregated", "collocated"]
         assert scheduling_policy in ["continuous-batching"]
+        if possible_batch_sizes_decode is not None:
+            possible_batch_sizes_decode = sorted({
+                int(value) for value in possible_batch_sizes_decode
+            })
+            assert possible_batch_sizes_decode
+            assert all(
+                is_power_of_two(value) for value in possible_batch_sizes_decode
+            )
 
         # Define the result dataframe
         columns = self.get_result_df_columns()
@@ -1733,18 +1756,23 @@ class RAGSweep:
 
                 possible_batch_sizes_dict = {}
                 for stage in self.stages:
-                    possible_batch_sizes_dict[stage] = (
-                        self.get_possible_batch_sizes_one_stage(
-                            stage,
-                            max_batch_size_request=(
-                                max_batch_size_request if stage != "decode" else None
-                            ),
-                            num_chips=(
-                                num_chips[stage] if stage != "retrieval" else None
-                            ),
-                            num_retrieval_servers=num_retrieval_servers,
+                    if stage == "decode" and possible_batch_sizes_decode is not None:
+                        possible_batch_sizes_dict[stage] = list(
+                            possible_batch_sizes_decode
                         )
-                    )
+                    else:
+                        possible_batch_sizes_dict[stage] = (
+                            self.get_possible_batch_sizes_one_stage(
+                                stage,
+                                max_batch_size_request=(
+                                    max_batch_size_request if stage != "decode" else None
+                                ),
+                                num_chips=(
+                                    num_chips[stage] if stage != "retrieval" else None
+                                ),
+                                num_retrieval_servers=num_retrieval_servers,
+                            )
+                        )
 
                 # The request size should not be larger than the max batch size per stage,
                 # because larger batch sizes are used to improve throughput, but we cannot
