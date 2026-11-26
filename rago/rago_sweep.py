@@ -909,56 +909,14 @@ class RAGSweep:
         if self.all_placement_strategies is not None:
             return self.all_placement_strategies
 
-        def get_collocation_combinations_recursive(stage_names):
-            """
-            Given a list of stage names, return a list of all possible collocated stages.
-            This function should only be called by get_collocation_combinations.
-            """
-            placement_stages = []
-            for i in range(1, len(stage_names)):
-                first_stage = stage_names[:i]
-                if len(stage_names[i:]) > 1:
-                    all_rest_stages = get_collocation_combinations_recursive(
-                        stage_names[i:]
-                    )
-                    for rest_stages in all_rest_stages:
-                        placement_stages.append([first_stage] + rest_stages)
-                elif len(stage_names[i:]) == 1:
-                    placement_stages.append([first_stage] + [stage_names[i:]])
-                    placement_stages.append([stage_names])
-                else:
-                    placement_stages.append([first_stage])
-
-            return placement_stages
-
-        all_placement_possibilities = get_collocation_combinations_recursive(
-            stage_names
+        from .deployment_geometry import collocation_combinations
+        self.all_placement_strategies = collocation_combinations(
+            stage_names,
+            filter_full_disaggregation=filter_full_disaggregation,
+            filter_retrieval_at_beginning_or_end=filter_retrieval_at_beginning_or_end,
+            disaggregate_decode=disaggregate_decode,
         )
-        all_placement_strategies = []
-        for i, placement_stages in enumerate(all_placement_possibilities):
-            keep_mask = True
-            if filter_full_disaggregation and len(placement_stages) == len(stage_names):
-                keep_mask = False
-            if disaggregate_decode:
-                if (
-                    len(placement_stages[-1]) != 1
-                    or placement_stages[-1][0] != "decode"
-                ):
-                    keep_mask = False
-            for collocated_stages in placement_stages:
-                if filter_retrieval_at_beginning_or_end and len(collocated_stages) > 1:
-                    if (
-                        collocated_stages[0] == "retrieval"
-                        or collocated_stages[-1] == "retrieval"
-                    ):
-                        keep_mask = False
-
-            if keep_mask:
-                all_placement_strategies.append(placement_stages)
-
-        self.all_placement_strategies = all_placement_strategies
-
-        return all_placement_strategies
+        return self.all_placement_strategies
 
     def get_result_df_columns(self):
         columns = []
@@ -1551,95 +1509,20 @@ class RAGSweep:
                     if nc <= max_num_chips_per_stage
                 ]
 
-        if placement_policy == "disaggregated":
-            previous_num_chips = 0
-            previous_mapping_and_num_chips = [(PhysicalMapping(), previous_num_chips)]
-            for stage in self.stages:
-                if stage == "retrieval":
-                    continue
-                possible_num_chips_current_stage = possible_num_chips_dict[stage]
-                current_mapping_and_num_chips = []
-                for (
-                    physical_mapping,
-                    previous_num_chips,
-                ) in previous_mapping_and_num_chips:
-                    for current_num_chips in possible_num_chips_current_stage:
-                        current_physical_mapping = copy.deepcopy(physical_mapping)
-                        current_physical_mapping.num_chips[stage] = current_num_chips
-                        num_chips = current_num_chips + previous_num_chips
-                        current_mapping_and_num_chips.append(
-                            (current_physical_mapping, num_chips)
-                        )
-                previous_mapping_and_num_chips = current_mapping_and_num_chips
-
-            mapping_and_num_chips_before_filtering = previous_mapping_and_num_chips
-
-        elif placement_policy == "collocated":
-            previous_num_chips = 0
-            previous_mapping_and_num_chips = [(PhysicalMapping(), previous_num_chips)]
-            for collocated_stages in collocation_strategy:
-                if len(collocated_stages) == 1 and collocated_stages[0] == "retrieval":
-                    continue
-
-                possible_num_chips_collocate = set(
-                    get_power_of_two_list(max_num_chips_per_stage)
-                )
-                for stage in collocated_stages:
-                    if stage == "retrieval":
-                        continue
-                    possible_num_chips_collocate = (
-                        possible_num_chips_collocate.intersection(
-                            possible_num_chips_dict[stage]
-                        )
-                    )
-                possible_num_chips_collocate = sorted(possible_num_chips_collocate)
-
-                current_mapping_and_num_chips = []
-                for (
-                    physical_mapping,
-                    previous_num_chips,
-                ) in previous_mapping_and_num_chips:
-                    for current_num_chips in possible_num_chips_collocate:
-                        current_physical_mapping = copy.deepcopy(physical_mapping)
-                        for stage in collocated_stages:
-                            if stage == "retrieval":
-                                continue
-                            current_physical_mapping.num_chips[stage] = (
-                                current_num_chips
-                            )
-                        num_chips = previous_num_chips + current_num_chips
-                        current_mapping_and_num_chips.append(
-                            (current_physical_mapping, num_chips)
-                        )
-                previous_mapping_and_num_chips = current_mapping_and_num_chips
-
-            mapping_and_num_chips_before_filtering = previous_mapping_and_num_chips
-
-        else:
-            raise ValueError(f"Unknown mapping policy: {placement_policy}")
-
-        # Regardless of task placement, filter unqualified mappings, and add retrieval servers
-        possible_physical_mappings = []
-        for physical_mapping, total_num_chips in mapping_and_num_chips_before_filtering:
-            if total_num_chips > max_num_chips or total_num_chips < min_num_chips:
-                continue
-            num_retrieval_servers = int(total_num_chips / self.num_chips_per_server)
-            if num_retrieval_servers < 1:
-                num_retrieval_servers = 1
-            physical_mapping.num_retrieval_servers = num_retrieval_servers
-            physical_mapping.num_chips["e2e"] = total_num_chips
-            physical_mapping.placement_policy = placement_policy
-            physical_mapping.collocation_strategy = collocation_strategy
-            possible_physical_mappings.extend(
-                enumerate_concrete_device_mappings(
-                    physical_mapping,
-                    available_devices=self._device_inventory(max_num_chips),
-                    device_links=self.device_links,
-                    max_layouts=self.max_device_layouts_per_mapping,
-                )
-            )
-
-        return possible_physical_mappings
+        from .deployment_geometry import enumerate_hardware_mappings
+        return enumerate_hardware_mappings(
+            stages=self.stages,
+            allowed_num_chips=possible_num_chips_dict,
+            min_num_chips=min_num_chips,
+            max_num_chips=max_num_chips,
+            max_num_chips_per_stage=max_num_chips_per_stage,
+            num_chips_per_server=self.num_chips_per_server,
+            placement_policy=placement_policy,
+            collocation_strategy=collocation_strategy,
+            available_devices=self._device_inventory(max_num_chips),
+            device_links=self.device_links,
+            max_layouts=self.max_device_layouts_per_mapping,
+        )
 
     def run_sweep_across_systems(
         self,

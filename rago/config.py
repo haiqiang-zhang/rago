@@ -245,8 +245,19 @@ def enumerate_concrete_device_mappings(
             # Since this policy is deterministic, only topology-distinct group
             # rank orders need enumeration on the target four-card box.
             rider_offset = 0
+            # Collocated prefill/decode are the SAME serving engine. In
+            # particular, a small unified engine must not rotate to different
+            # GPUs between its two roles inside a larger pooled group.
+            from .deployment_geometry import unified_role_pairs
+            shared_roles = {dec: pre for pre, dec in unified_role_pairs(group)}
             for stage in group:
                 if stage == "retrieval":
+                    continue
+                if stage in shared_roles and shared_roles[stage] in concrete.stage_devices:
+                    pre = shared_roles[stage]
+                    if mapping.num_chips[stage] != mapping.num_chips[pre]:
+                        raise ValueError("A unified prefill/decode engine must have equal GPU widths")
+                    concrete.stage_devices[stage] = list(concrete.stage_devices[pre])
                     continue
                 n = int(mapping.num_chips.get(stage, len(assigned)) or len(assigned))
                 if n >= len(assigned):
